@@ -161,6 +161,8 @@ const reflectionOptions = {
 
 const STORAGE_RECORDS = "neighbour-signals-records-v3";
 const STORAGE_DRAFT = "neighbour-signals-draft-v3";
+const STORAGE_ADMIN_SESSION = "neighbour-signals-admin-session-v1";
+const CLOUD_CONFIG = window.NEIGHBOUR_SIGNALS_CONFIG || {};
 const flow = ["welcome", "character", "moment", "map", "reflection", "result"];
 const stepScreens = ["character", "moment", "map", "reflection", "result"];
 
@@ -168,6 +170,9 @@ const state = {
   screen: "welcome",
   returnScreen: "welcome",
   records: readStorage(STORAGE_RECORDS, []),
+  cloudRecords: [],
+  adminSession: readSessionStorage(STORAGE_ADMIN_SESSION, null),
+  syncing: false,
   sessionRecordIds: [],
   session: createSession(),
 };
@@ -215,6 +220,249 @@ function writeStorage(key, value) {
   } catch {
     showToast("This browser could not save locally.");
   }
+}
+
+function readSessionStorage(key, fallback) {
+  try {
+    const value = JSON.parse(sessionStorage.getItem(key));
+    return value ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeSessionStorage(key, value) {
+  try {
+    if (value === null) sessionStorage.removeItem(key);
+    else sessionStorage.setItem(key, JSON.stringify(value));
+  } catch {}
+}
+
+function cloudConfigured() {
+  return Boolean(
+    CLOUD_CONFIG.supabaseUrl?.startsWith("https://") &&
+      CLOUD_CONFIG.supabaseAnonKey &&
+      !CLOUD_CONFIG.supabaseUrl.includes("YOUR_")
+  );
+}
+
+function cloudUrl(path) {
+  return `${CLOUD_CONFIG.supabaseUrl.replace(/\/$/, "")}${path}`;
+}
+
+function cloudHeaders(token = "") {
+  const headers = {
+    apikey: CLOUD_CONFIG.supabaseAnonKey,
+    "Content-Type": "application/json",
+  };
+  if (token) headers.Authorization = `Bearer ${token}`;
+  return headers;
+}
+
+function setSyncStatus(mode, label) {
+  const status = $("#sync-status");
+  if (!status) return;
+  status.className = `sync-status ${mode}`;
+  status.querySelector("span").textContent = label;
+}
+
+function recordForCloud(record) {
+  const { syncStatus, lastSyncError, submitted, ...payload } = record;
+  return {
+    record_id: record.recordId,
+    participant_id: record.participantId,
+    local_area: record.localArea,
+    node: record.node,
+    node_type: record.nodeType,
+    feeling: record.feeling,
+    importance_score: record.importanceScore,
+    support: record.support,
+    technology: record.technology,
+    privacy_choice: record.privacy,
+    completed_at: record.completedAt,
+    payload,
+  };
+}
+
+function markRecordSync(recordId, syncStatus, error = "") {
+  const record = state.records.find((item) => item.recordId === recordId);
+  if (!record) return;
+  record.syncStatus = syncStatus;
+  record.lastSyncError = error;
+  writeStorage(STORAGE_RECORDS, state.records);
+}
+
+async function syncRecord(record) {
+  if (!cloudConfigured() || record.submitted === false) return false;
+  if (!navigator.onLine) {
+    markRecordSync(record.recordId, "pending", "Offline");
+    setSyncStatus("offline", "Waiting");
+    return false;
+  }
+
+  try {
+    const response = await fetch(cloudUrl("/rest/v1/story_records"), {
+      method: "POST",
+      headers: {
+        ...cloudHeaders(),
+        Prefer: "return=minimal",
+      },
+      body: JSON.stringify(recordForCloud(record)),
+    });
+    if (response.status === 409) {
+      markRecordSync(record.recordId, "synced");
+      return true;
+    }
+    if (!response.ok) throw new Error(await readResponseError(response));
+    markRecordSync(record.recordId, "synced");
+    return true;
+  } catch (error) {
+    markRecordSync(record.recordId, "pending", error.message);
+    return false;
+  }
+}
+
+async function syncPendingRecords() {
+  if (!cloudConfigured() || state.syncing) {
+    renderSyncStatus();
+    return;
+  }
+  const pending = state.records.filter(
+    (record) => record.submitted !== false && record.syncStatus !== "synced"
+  );
+  if (!pending.length) {
+    renderSyncStatus();
+    return;
+  }
+
+  state.syncing = true;
+  setSyncStatus("syncing", `Syncing ${pending.length}`);
+  let synced = 0;
+  for (const record of pending) {
+    if (await syncRecord(record)) synced += 1;
+  }
+  state.syncing = false;
+  renderSyncStatus();
+  if (synced) showToast(`${synced} ${plural(synced, "story", "stories")} synced.`);
+}
+
+function renderSyncStatus() {
+  if (!cloudConfigured()) {
+    setSyncStatus("local", "Local setup");
+    return;
+  }
+  if (!navigator.onLine) {
+    setSyncStatus("offline", "Offline");
+    return;
+  }
+  const pending = state.records.filter(
+    (record) => record.submitted !== false && record.syncStatus !== "synced"
+  ).length;
+  if (pending) {
+    setSyncStatus("error", `${pending} waiting`);
+    return;
+  }
+  setSyncStatus("synced", "Cloud synced");
+}
+
+async function readResponseError(response) {
+  try {
+    const payload = await response.json();
+    return payload.message || payload.error_description || payload.error || `Request failed (${response.status})`;
+  } catch {
+    return `Request failed (${response.status})`;
+  }
+}
+
+function adminSessionValid() {
+  return Boolean(
+    state.adminSession?.accessToken &&
+      state.adminSession.expiresAt &&
+      state.adminSession.expiresAt > Date.now() + 30000
+  );
+}
+
+async function signInResearcher(email, password) {
+  const response = await fetch(cloudUrl("/auth/v1/token?grant_type=password"), {
+    method: "POST",
+    headers: cloudHeaders(),
+    body: JSON.stringify({ email, password }),
+  });
+  if (!response.ok) throw new Error(await readResponseError(response));
+  const payload = await response.json();
+  state.adminSession = {
+    accessToken: payload.access_token,
+    refreshToken: payload.refresh_token,
+    expiresAt: Date.now() + payload.expires_in * 1000,
+    email: payload.user?.email || email,
+  };
+  writeSessionStorage(STORAGE_ADMIN_SESSION, state.adminSession);
+}
+
+async function refreshAdminSession() {
+  if (!state.adminSession?.refreshToken) return false;
+  try {
+    const response = await fetch(cloudUrl("/auth/v1/token?grant_type=refresh_token"), {
+      method: "POST",
+      headers: cloudHeaders(),
+      body: JSON.stringify({ refresh_token: state.adminSession.refreshToken }),
+    });
+    if (!response.ok) throw new Error("Session expired");
+    const payload = await response.json();
+    state.adminSession = {
+      ...state.adminSession,
+      accessToken: payload.access_token,
+      refreshToken: payload.refresh_token || state.adminSession.refreshToken,
+      expiresAt: Date.now() + payload.expires_in * 1000,
+    };
+    writeSessionStorage(STORAGE_ADMIN_SESSION, state.adminSession);
+    return true;
+  } catch {
+    researcherLogout();
+    return false;
+  }
+}
+
+async function ensureAdminSession() {
+  if (adminSessionValid()) return true;
+  return refreshAdminSession();
+}
+
+async function fetchCloudRecords() {
+  if (!(await ensureAdminSession())) throw new Error("Please sign in again.");
+  const response = await fetch(
+    cloudUrl("/rest/v1/story_records?select=payload,created_at&order=created_at.desc"),
+    {
+      headers: cloudHeaders(state.adminSession.accessToken),
+    }
+  );
+  if (!response.ok) throw new Error(await readResponseError(response));
+  const rows = await response.json();
+  state.cloudRecords = rows.map((row) => ({
+    ...row.payload,
+    syncStatus: "synced",
+    submitted: true,
+  }));
+  return state.cloudRecords;
+}
+
+async function deleteCloudRecords() {
+  if (!(await ensureAdminSession())) throw new Error("Please sign in again.");
+  const response = await fetch(cloudUrl("/rest/v1/story_records?record_id=not.is.null"), {
+    method: "DELETE",
+    headers: {
+      ...cloudHeaders(state.adminSession.accessToken),
+      Prefer: "return=minimal",
+    },
+  });
+  if (!response.ok) throw new Error(await readResponseError(response));
+  state.cloudRecords = [];
+}
+
+function researcherLogout() {
+  state.adminSession = null;
+  state.cloudRecords = [];
+  writeSessionStorage(STORAGE_ADMIN_SESSION, null);
 }
 
 const $ = (selector) => document.querySelector(selector);
@@ -572,7 +820,10 @@ function saveStory() {
     privacy: optionLabel("privacy", state.session.reflection.privacy) || "Not answered",
     note: state.session.reflection.note.trim(),
     completedAt: new Date().toISOString(),
-    gameVersion: "3.0",
+    gameVersion: "4.0",
+    submitted: false,
+    syncStatus: cloudConfigured() ? "pending" : "local",
+    lastSyncError: "",
   };
   state.records.push(record);
   state.sessionRecordIds.push(record.recordId);
@@ -666,6 +917,18 @@ function prepareAnotherStory() {
   showScreen("moment");
 }
 
+function submitCurrentSession() {
+  state.records.forEach((record) => {
+    if (state.sessionRecordIds.includes(record.recordId)) {
+      record.submitted = true;
+      if (record.syncStatus !== "synced") record.syncStatus = cloudConfigured() ? "pending" : "local";
+    }
+  });
+  writeStorage(STORAGE_RECORDS, state.records);
+  saveDraft();
+  syncPendingRecords();
+}
+
 function countBy(records, key) {
   return records.reduce((result, record) => {
     const value = record[key] || "Not answered";
@@ -678,8 +941,12 @@ function topEntry(counts) {
   return Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
 }
 
+function researchRecords() {
+  return cloudConfigured() && state.adminSession ? state.cloudRecords : state.records;
+}
+
 function renderResearch() {
-  const records = state.records;
+  const records = researchRecords();
   const participants = new Set(records.map((record) => record.participantId)).size;
   const highImportance = records.filter((record) => record.importanceScore >= 3).length;
   const peopleConnections = records.filter((record) => record.nodeType === "people").length;
@@ -805,9 +1072,32 @@ function renderDataTable(records) {
   `;
 }
 
-function openResearch() {
+async function openResearch() {
   state.returnScreen = state.screen === "research" ? "welcome" : state.screen;
-  showScreen("research");
+  if (!cloudConfigured()) {
+    $("#cloud-setup-dialog").showModal();
+    return;
+  }
+  if (!(await ensureAdminSession())) {
+    $("#admin-error").textContent = "";
+    $("#admin-dialog").showModal();
+    return;
+  }
+  await enterResearch();
+}
+
+async function enterResearch() {
+  setSyncStatus("syncing", "Loading data");
+  try {
+    await fetchCloudRecords();
+    $("#research-source-copy").textContent = `All synced participant devices · signed in as ${state.adminSession.email}`;
+    showScreen("research");
+    setSyncStatus("synced", "Cloud loaded");
+  } catch (error) {
+    setSyncStatus("error", "Load failed");
+    showToast(error.message);
+    if (!state.adminSession) $("#admin-dialog").showModal();
+  }
 }
 
 function closeResearch() {
@@ -816,7 +1106,8 @@ function closeResearch() {
 }
 
 function exportRecords(format) {
-  if (!state.records.length) {
+  const records = researchRecords();
+  if (!records.length) {
     showToast("There is no data to export yet.");
     return;
   }
@@ -824,9 +1115,9 @@ function exportRecords(format) {
     const payload = {
       exportedAt: new Date().toISOString(),
       game: "Neighbour Signals",
-      version: "3.0",
-      recordCount: state.records.length,
-      records: state.records,
+      version: "4.0",
+      recordCount: records.length,
+      records,
     };
     downloadFile(
       `neighbour-signals-${dateStamp()}.json`,
@@ -861,7 +1152,7 @@ function exportRecords(format) {
   ];
   const csv = [
     headers.join(","),
-    ...state.records.map((record) => headers.map((header) => csvCell(record[header])).join(",")),
+    ...records.map((record) => headers.map((header) => csvCell(record[header])).join(",")),
   ].join("\n");
   downloadFile(`neighbour-signals-${dateStamp()}.csv`, csv, "text/csv;charset=utf-8");
 }
@@ -916,9 +1207,39 @@ function bindEvents() {
   $("#close-help").addEventListener("click", () => $("#help-dialog").close());
   $("#open-research").addEventListener("click", openResearch);
   $("#close-research").addEventListener("click", closeResearch);
+  $("#close-admin").addEventListener("click", () => $("#admin-dialog").close());
+  $("#close-cloud-setup").addEventListener("click", () => $("#cloud-setup-dialog").close());
+  $("#close-cloud-setup-action").addEventListener("click", () => $("#cloud-setup-dialog").close());
+  $("#refresh-research").addEventListener("click", enterResearch);
+  $("#research-logout").addEventListener("click", () => {
+    researcherLogout();
+    closeResearch();
+    showToast("Researcher signed out.");
+  });
   $("#brand-home").addEventListener("click", () => {
     if (state.screen === "research") closeResearch();
     else showScreen(state.screen);
+  });
+
+  $("#admin-login-form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const button = $("#admin-login-button");
+    const email = $("#admin-email").value.trim();
+    const password = $("#admin-password").value;
+    $("#admin-error").textContent = "";
+    button.disabled = true;
+    button.textContent = "Signing in…";
+    try {
+      await signInResearcher(email, password);
+      $("#admin-password").value = "";
+      $("#admin-dialog").close();
+      await enterResearch();
+    } catch (error) {
+      $("#admin-error").textContent = error.message || "Sign-in failed.";
+    } finally {
+      button.disabled = false;
+      button.textContent = "Sign in securely";
+    }
   });
 
   $("#participant-id").addEventListener("input", () => {
@@ -946,20 +1267,32 @@ function bindEvents() {
   });
 
   $("#add-story").addEventListener("click", prepareAnotherStory);
-  $("#finish-session").addEventListener("click", () => showScreen("finished"));
+  $("#finish-session").addEventListener("click", () => {
+    submitCurrentSession();
+    showScreen("finished");
+  });
   $("#view-data").addEventListener("click", openResearch);
   $("#new-participant").addEventListener("click", startNewParticipant);
   $("#export-json").addEventListener("click", () => exportRecords("json"));
   $("#export-csv").addEventListener("click", () => exportRecords("csv"));
-  $("#clear-data").addEventListener("click", () => {
-    if (!confirm("Delete every saved participant and story from this device?")) return;
-    state.records = [];
-    state.sessionRecordIds = [];
-    writeStorage(STORAGE_RECORDS, []);
-    saveDraft();
-    renderResearch();
-    showToast("All device data has been cleared.");
+  $("#clear-data").addEventListener("click", async () => {
+    if (!confirm("Permanently delete every participant story from the shared cloud database?")) return;
+    try {
+      await deleteCloudRecords();
+      state.records = [];
+      state.sessionRecordIds = [];
+      writeStorage(STORAGE_RECORDS, []);
+      saveDraft();
+      renderResearch();
+      renderSyncStatus();
+      showToast("All shared research data has been deleted.");
+    } catch (error) {
+      showToast(error.message);
+    }
   });
+
+  window.addEventListener("online", syncPendingRecords);
+  window.addEventListener("offline", renderSyncStatus);
 }
 
 function renderAll() {
@@ -975,9 +1308,22 @@ function init() {
   $("#age-range").value = state.session.ageRange;
   $("#local-area").value = state.session.localArea;
   $("#consent").checked = state.session.consent;
+  if (cloudConfigured()) {
+    $("#storage-note").textContent =
+      "No name, email, address, or precise location is requested. Completed stories sync securely to the shared research database.";
+    $("#finish-sync-copy").textContent =
+      "They are syncing securely with the shared research database. You may close this page.";
+  } else {
+    $("#storage-note").textContent =
+      "No name, email, address, or precise location is requested. Cloud setup is not connected yet, so answers remain on this device.";
+    $("#finish-sync-copy").textContent =
+      "They are saved on this device. Connect the cloud configuration before collecting across devices.";
+  }
   renderAll();
   bindEvents();
   showScreen(state.screen, { scroll: false });
+  renderSyncStatus();
+  syncPendingRecords();
 }
 
 init();

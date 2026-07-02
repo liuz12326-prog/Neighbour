@@ -119,8 +119,42 @@ p {
 }
 
 .header-actions {
+  align-items: center;
   display: flex;
   gap: 8px;
+}
+
+.sync-status {
+  align-items: center;
+  background: var(--white);
+  border: 1.5px solid var(--ink);
+  border-radius: var(--radius);
+  display: inline-flex;
+  font-size: 11px;
+  font-weight: 800;
+  gap: 7px;
+  min-height: 36px;
+  padding: 0 10px;
+}
+
+.sync-status i {
+  background: var(--muted);
+  border-radius: 50%;
+  height: 9px;
+  width: 9px;
+}
+
+.sync-status.syncing i {
+  background: var(--yellow);
+}
+
+.sync-status.synced i {
+  background: var(--teal);
+}
+
+.sync-status.offline i,
+.sync-status.error i {
+  background: var(--coral);
 }
 
 .icon-button {
@@ -1136,6 +1170,13 @@ textarea {
   max-width: none;
 }
 
+.research-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
 .metric-grid {
   display: grid;
   gap: 12px;
@@ -1382,6 +1423,30 @@ dialog h2 {
   margin-top: 8px;
 }
 
+.dialog-copy {
+  color: var(--muted);
+  font-size: 14px;
+  line-height: 1.5;
+  margin-top: 12px;
+  max-width: 520px;
+}
+
+.admin-form {
+  display: grid;
+  gap: 16px;
+  margin-top: 24px;
+}
+
+.admin-form .primary-button {
+  justify-self: start;
+}
+
+.form-error {
+  color: #a62c20;
+  font-size: 13px;
+  min-height: 18px;
+}
+
 dialog ol {
   display: grid;
   gap: 10px;
@@ -1589,6 +1654,10 @@ dialog li span {
     gap: 16px;
   }
 
+  .research-actions {
+    justify-content: flex-start;
+  }
+
   .export-bar {
     align-items: stretch;
     flex-wrap: wrap;
@@ -1616,6 +1685,20 @@ dialog li span {
   .icon-button {
     height: 38px;
     width: 38px;
+  }
+
+  .header-actions {
+    gap: 6px;
+  }
+
+  .sync-status {
+    max-width: 104px;
+  }
+
+  .sync-status > span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .progress-step {
