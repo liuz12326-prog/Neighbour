@@ -1,10 +1,9 @@
-const CACHE_NAME = "neighbour-signals-v4";
+const CACHE_NAME = "neighbour-signals-v5";
 const APP_FILES = [
   "./",
   "./index.html",
   "./styles.css",
   "./app.js",
-  "./config.js",
   "./manifest.webmanifest",
   "./assets/pip.svg",
 ];
@@ -25,18 +24,7 @@ self.addEventListener("activate", (event) => {
 
 self.addEventListener("fetch", (event) => {
   if (event.request.method !== "GET") return;
-  if (new URL(event.request.url).pathname.endsWith("/config.js")) {
-    event.respondWith(
-      fetch(event.request)
-        .then((response) => {
-          const copy = response.clone();
-          caches.open(CACHE_NAME).then((cache) => cache.put(event.request, copy));
-          return response;
-        })
-        .catch(() => caches.match(event.request))
-    );
-    return;
-  }
+  if (new URL(event.request.url).pathname.startsWith("/api/")) return;
   event.respondWith(
     caches.match(event.request).then((cached) => {
       return (

@@ -21,7 +21,7 @@
         </button>
         <div class="header-actions">
           <span class="sync-status local" id="sync-status" title="Data connection status">
-            <i></i><span>Local</span>
+            <i></i><span>Connecting</span>
           </span>
           <button class="icon-button" id="open-help" aria-label="Open game guide" title="Game guide">?</button>
           <button class="icon-button" id="open-research" aria-label="Open research data" title="Research data">▥</button>
@@ -270,7 +270,7 @@
               <div class="finish-stamp">DONE</div>
               <span class="eyebrow">THANK YOU</span>
               <h1>Your stories have been saved.</h1>
-              <p id="finish-sync-copy">They are ready to sync securely with the shared research database.</p>
+              <p id="finish-sync-copy">They are ready to sync securely with the main research device.</p>
               <div class="finish-buttons">
                 <button class="primary-button" id="view-data">View research summary</button>
                 <button class="secondary-button" id="new-participant">Start a new participant</button>
@@ -283,7 +283,7 @@
               <div>
                 <span class="eyebrow">RESEARCH SUMMARY</span>
                 <h1>What the stories are showing</h1>
-                <p id="research-source-copy">Anonymous patterns from all participant devices.</p>
+                <p id="research-source-copy">Anonymous patterns collected by this main device.</p>
               </div>
               <div class="research-actions">
                 <button class="secondary-button small" id="refresh-research">↻ Refresh</button>
@@ -358,12 +358,8 @@
       <button class="dialog-close" id="close-admin" aria-label="Close login">×</button>
       <span class="eyebrow">RESEARCHER ACCESS</span>
       <h2>View all participant data</h2>
-      <p class="dialog-copy">Sign in with the researcher account. Participants cannot open the shared dataset.</p>
+      <p class="dialog-copy">Enter the researcher password. Participants cannot open the shared dataset.</p>
       <form id="admin-login-form" class="admin-form">
-        <div class="field-group">
-          <label for="admin-email">Researcher email</label>
-          <input id="admin-email" type="email" autocomplete="username" required />
-        </div>
         <div class="field-group">
           <label for="admin-password">Password</label>
           <input id="admin-password" type="password" autocomplete="current-password" required />
@@ -375,14 +371,13 @@
 
     <dialog id="cloud-setup-dialog">
       <button class="dialog-close" id="close-cloud-setup" aria-label="Close setup message">×</button>
-      <span class="eyebrow">CLOUD SETUP REQUIRED</span>
-      <h2>Connect the shared database</h2>
-      <p class="dialog-copy">The website is ready for cloud sync, but it still needs your Supabase project URL and publishable key in <b>config.js</b>. The included setup guide contains the exact steps and database script.</p>
+      <span class="eyebrow">MAIN DEVICE REQUIRED</span>
+      <h2>Open the shared website address</h2>
+      <p class="dialog-copy">This copy was opened as a file, so it cannot reach the main device. Start <b>start.command</b> on the main device, then open the web address shown in its window.</p>
       <button class="primary-button" id="close-cloud-setup-action">Return to game</button>
     </dialog>
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
-    <script src="./config.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

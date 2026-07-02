@@ -161,8 +161,6 @@ const reflectionOptions = {
 
 const STORAGE_RECORDS = "neighbour-signals-records-v3";
 const STORAGE_DRAFT = "neighbour-signals-draft-v3";
-const STORAGE_ADMIN_SESSION = "neighbour-signals-admin-session-v1";
-const CLOUD_CONFIG = window.NEIGHBOUR_SIGNALS_CONFIG || {};
 const flow = ["welcome", "character", "moment", "map", "reflection", "result"];
 const stepScreens = ["character", "moment", "map", "reflection", "result"];
 
@@ -171,7 +169,8 @@ const state = {
   returnScreen: "welcome",
   records: readStorage(STORAGE_RECORDS, []),
   cloudRecords: [],
-  adminSession: readSessionStorage(STORAGE_ADMIN_SESSION, null),
+  adminSession: false,
+  serverOnline: false,
   syncing: false,
   sessionRecordIds: [],
   session: createSession(),
@@ -222,41 +221,8 @@ function writeStorage(key, value) {
   }
 }
 
-function readSessionStorage(key, fallback) {
-  try {
-    const value = JSON.parse(sessionStorage.getItem(key));
-    return value ?? fallback;
-  } catch {
-    return fallback;
-  }
-}
-
-function writeSessionStorage(key, value) {
-  try {
-    if (value === null) sessionStorage.removeItem(key);
-    else sessionStorage.setItem(key, JSON.stringify(value));
-  } catch {}
-}
-
 function cloudConfigured() {
-  return Boolean(
-    CLOUD_CONFIG.supabaseUrl?.startsWith("https://") &&
-      CLOUD_CONFIG.supabaseAnonKey &&
-      !CLOUD_CONFIG.supabaseUrl.includes("YOUR_")
-  );
-}
-
-function cloudUrl(path) {
-  return `${CLOUD_CONFIG.supabaseUrl.replace(/\/$/, "")}${path}`;
-}
-
-function cloudHeaders(token = "") {
-  const headers = {
-    apikey: CLOUD_CONFIG.supabaseAnonKey,
-    "Content-Type": "application/json",
-  };
-  if (token) headers.Authorization = `Bearer ${token}`;
-  return headers;
+  return state.serverOnline;
 }
 
 function setSyncStatus(mode, label) {
@@ -268,20 +234,23 @@ function setSyncStatus(mode, label) {
 
 function recordForCloud(record) {
   const { syncStatus, lastSyncError, submitted, ...payload } = record;
-  return {
-    record_id: record.recordId,
-    participant_id: record.participantId,
-    local_area: record.localArea,
-    node: record.node,
-    node_type: record.nodeType,
-    feeling: record.feeling,
-    importance_score: record.importanceScore,
-    support: record.support,
-    technology: record.technology,
-    privacy_choice: record.privacy,
-    completed_at: record.completedAt,
-    payload,
-  };
+  return payload;
+}
+
+async function checkServerConnection() {
+  if (!location.protocol.startsWith("http")) {
+    state.serverOnline = false;
+    renderSyncStatus();
+    return false;
+  }
+  try {
+    const response = await fetch("/api/health", { cache: "no-store" });
+    state.serverOnline = response.ok;
+  } catch {
+    state.serverOnline = false;
+  }
+  renderSyncStatus();
+  return state.serverOnline;
 }
 
 function markRecordSync(recordId, syncStatus, error = "") {
@@ -301,12 +270,9 @@ async function syncRecord(record) {
   }
 
   try {
-    const response = await fetch(cloudUrl("/rest/v1/story_records"), {
+    const response = await fetch("/api/records", {
       method: "POST",
-      headers: {
-        ...cloudHeaders(),
-        Prefer: "return=minimal",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(recordForCloud(record)),
     });
     if (response.status === 409) {
@@ -323,6 +289,7 @@ async function syncRecord(record) {
 }
 
 async function syncPendingRecords() {
+  if (!cloudConfigured()) await checkServerConnection();
   if (!cloudConfigured() || state.syncing) {
     renderSyncStatus();
     return;
@@ -348,7 +315,10 @@ async function syncPendingRecords() {
 
 function renderSyncStatus() {
   if (!cloudConfigured()) {
-    setSyncStatus("local", "Local setup");
+    setSyncStatus(
+      location.protocol.startsWith("http") ? "offline" : "local",
+      location.protocol.startsWith("http") ? "Main offline" : "Open shared URL"
+    );
     return;
   }
   if (!navigator.onLine) {
@@ -362,7 +332,7 @@ function renderSyncStatus() {
     setSyncStatus("error", `${pending} waiting`);
     return;
   }
-  setSyncStatus("synced", "Cloud synced");
+  setSyncStatus("synced", "Main synced");
 }
 
 async function readResponseError(response) {
@@ -374,72 +344,36 @@ async function readResponseError(response) {
   }
 }
 
-function adminSessionValid() {
-  return Boolean(
-    state.adminSession?.accessToken &&
-      state.adminSession.expiresAt &&
-      state.adminSession.expiresAt > Date.now() + 30000
-  );
-}
-
-async function signInResearcher(email, password) {
-  const response = await fetch(cloudUrl("/auth/v1/token?grant_type=password"), {
+async function signInResearcher(password) {
+  const response = await fetch("/api/login", {
     method: "POST",
-    headers: cloudHeaders(),
-    body: JSON.stringify({ email, password }),
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ password }),
   });
   if (!response.ok) throw new Error(await readResponseError(response));
-  const payload = await response.json();
-  state.adminSession = {
-    accessToken: payload.access_token,
-    refreshToken: payload.refresh_token,
-    expiresAt: Date.now() + payload.expires_in * 1000,
-    email: payload.user?.email || email,
-  };
-  writeSessionStorage(STORAGE_ADMIN_SESSION, state.adminSession);
+  state.adminSession = true;
 }
 
-async function refreshAdminSession() {
-  if (!state.adminSession?.refreshToken) return false;
+async function ensureAdminSession() {
   try {
-    const response = await fetch(cloudUrl("/auth/v1/token?grant_type=refresh_token"), {
-      method: "POST",
-      headers: cloudHeaders(),
-      body: JSON.stringify({ refresh_token: state.adminSession.refreshToken }),
-    });
-    if (!response.ok) throw new Error("Session expired");
+    const response = await fetch("/api/session", { cache: "no-store" });
+    if (!response.ok) return false;
     const payload = await response.json();
-    state.adminSession = {
-      ...state.adminSession,
-      accessToken: payload.access_token,
-      refreshToken: payload.refresh_token || state.adminSession.refreshToken,
-      expiresAt: Date.now() + payload.expires_in * 1000,
-    };
-    writeSessionStorage(STORAGE_ADMIN_SESSION, state.adminSession);
-    return true;
+    state.adminSession = Boolean(payload.authenticated);
+    return state.adminSession;
   } catch {
-    researcherLogout();
+    state.adminSession = false;
     return false;
   }
 }
 
-async function ensureAdminSession() {
-  if (adminSessionValid()) return true;
-  return refreshAdminSession();
-}
-
 async function fetchCloudRecords() {
   if (!(await ensureAdminSession())) throw new Error("Please sign in again.");
-  const response = await fetch(
-    cloudUrl("/rest/v1/story_records?select=payload,created_at&order=created_at.desc"),
-    {
-      headers: cloudHeaders(state.adminSession.accessToken),
-    }
-  );
+  const response = await fetch("/api/records", { cache: "no-store" });
   if (!response.ok) throw new Error(await readResponseError(response));
-  const rows = await response.json();
-  state.cloudRecords = rows.map((row) => ({
-    ...row.payload,
+  const payload = await response.json();
+  state.cloudRecords = payload.records.map((record) => ({
+    ...record,
     syncStatus: "synced",
     submitted: true,
   }));
@@ -448,21 +382,19 @@ async function fetchCloudRecords() {
 
 async function deleteCloudRecords() {
   if (!(await ensureAdminSession())) throw new Error("Please sign in again.");
-  const response = await fetch(cloudUrl("/rest/v1/story_records?record_id=not.is.null"), {
+  const response = await fetch("/api/records", {
     method: "DELETE",
-    headers: {
-      ...cloudHeaders(state.adminSession.accessToken),
-      Prefer: "return=minimal",
-    },
   });
   if (!response.ok) throw new Error(await readResponseError(response));
   state.cloudRecords = [];
 }
 
-function researcherLogout() {
+async function researcherLogout() {
+  try {
+    await fetch("/api/logout", { method: "POST" });
+  } catch {}
   state.adminSession = null;
   state.cloudRecords = [];
-  writeSessionStorage(STORAGE_ADMIN_SESSION, null);
 }
 
 const $ = (selector) => document.querySelector(selector);
@@ -1074,6 +1006,7 @@ function renderDataTable(records) {
 
 async function openResearch() {
   state.returnScreen = state.screen === "research" ? "welcome" : state.screen;
+  if (!cloudConfigured()) await checkServerConnection();
   if (!cloudConfigured()) {
     $("#cloud-setup-dialog").showModal();
     return;
@@ -1090,9 +1023,10 @@ async function enterResearch() {
   setSyncStatus("syncing", "Loading data");
   try {
     await fetchCloudRecords();
-    $("#research-source-copy").textContent = `All synced participant devices · signed in as ${state.adminSession.email}`;
+    $("#research-source-copy").textContent =
+      "All participant devices synced to this main device · password-protected view";
     showScreen("research");
-    setSyncStatus("synced", "Cloud loaded");
+    setSyncStatus("synced", "All data loaded");
   } catch (error) {
     setSyncStatus("error", "Load failed");
     showToast(error.message);
@@ -1211,8 +1145,8 @@ function bindEvents() {
   $("#close-cloud-setup").addEventListener("click", () => $("#cloud-setup-dialog").close());
   $("#close-cloud-setup-action").addEventListener("click", () => $("#cloud-setup-dialog").close());
   $("#refresh-research").addEventListener("click", enterResearch);
-  $("#research-logout").addEventListener("click", () => {
-    researcherLogout();
+  $("#research-logout").addEventListener("click", async () => {
+    await researcherLogout();
     closeResearch();
     showToast("Researcher signed out.");
   });
@@ -1224,13 +1158,12 @@ function bindEvents() {
   $("#admin-login-form").addEventListener("submit", async (event) => {
     event.preventDefault();
     const button = $("#admin-login-button");
-    const email = $("#admin-email").value.trim();
     const password = $("#admin-password").value;
     $("#admin-error").textContent = "";
     button.disabled = true;
     button.textContent = "Signing in…";
     try {
-      await signInResearcher(email, password);
+      await signInResearcher(password);
       $("#admin-password").value = "";
       $("#admin-dialog").close();
       await enterResearch();
@@ -1276,7 +1209,7 @@ function bindEvents() {
   $("#export-json").addEventListener("click", () => exportRecords("json"));
   $("#export-csv").addEventListener("click", () => exportRecords("csv"));
   $("#clear-data").addEventListener("click", async () => {
-    if (!confirm("Permanently delete every participant story from the shared cloud database?")) return;
+    if (!confirm("Permanently delete every participant story stored on this main device?")) return;
     try {
       await deleteCloudRecords();
       state.records = [];
@@ -1285,7 +1218,7 @@ function bindEvents() {
       saveDraft();
       renderResearch();
       renderSyncStatus();
-      showToast("All shared research data has been deleted.");
+      showToast("All research data on the main device has been deleted.");
     } catch (error) {
       showToast(error.message);
     }
@@ -1302,26 +1235,27 @@ function renderAll() {
   renderReflection();
 }
 
-function init() {
+async function init() {
   loadDraft();
   $("#participant-id").value = state.session.participantId;
   $("#age-range").value = state.session.ageRange;
   $("#local-area").value = state.session.localArea;
   $("#consent").checked = state.session.consent;
-  if (cloudConfigured()) {
-    $("#storage-note").textContent =
-      "No name, email, address, or precise location is requested. Completed stories sync securely to the shared research database.";
-    $("#finish-sync-copy").textContent =
-      "They are syncing securely with the shared research database. You may close this page.";
-  } else {
-    $("#storage-note").textContent =
-      "No name, email, address, or precise location is requested. Cloud setup is not connected yet, so answers remain on this device.";
-    $("#finish-sync-copy").textContent =
-      "They are saved on this device. Connect the cloud configuration before collecting across devices.";
-  }
   renderAll();
   bindEvents();
   showScreen(state.screen, { scroll: false });
+  await checkServerConnection();
+  if (cloudConfigured()) {
+    $("#storage-note").textContent =
+      "No name, email, address, or precise location is requested. Completed stories sync securely to the main research device.";
+    $("#finish-sync-copy").textContent =
+      "They are syncing securely with the main research device. You may close this page.";
+  } else {
+    $("#storage-note").textContent =
+      "No name, email, address, or precise location is requested. This page is not connected to the main device, so answers remain here.";
+    $("#finish-sync-copy").textContent =
+      "They are saved here. Open the shared main-device address to collect across devices.";
+  }
   renderSyncStatus();
   syncPendingRecords();
 }

@@ -1,62 +1,66 @@
 # Neighbour Signals
 
-A responsive Moray community story game. Version 4 adds shared cloud sync and a password-protected researcher dashboard.
+This version uses the researcher's main computer as the shared data server. It does not use Supabase or another database service.
 
-## How Sync Works
+## What It Does
 
-- A participant's answers are saved locally during the game.
-- Selecting **Finish session** marks the stories as submitted.
-- Submitted stories upload to the shared Supabase database.
-- If the device is offline, stories remain queued and upload automatically when the connection returns.
-- Participant devices have permission to insert records only. They cannot read, change, or delete the shared dataset.
-- The researcher signs in with an email and password to read, export, or delete all synced records.
+- Every participant opens the same address supplied by the main computer.
+- Answers are saved locally while the participant plays.
+- Selecting **Finish session** sends the completed stories to the main computer.
+- If the connection drops, completed stories remain queued and retry when the device reconnects.
+- Participant devices can submit data but cannot read the shared dataset.
+- The `▥` research dashboard requires the researcher password.
+- Shared records are stored in `data/records.json` on the main computer.
 
-## One-Time Cloud Setup
+## Start On macOS
 
-### 1. Create the database
+1. Install Node.js if the computer does not already have it.
+2. Double-click `start.command`.
+3. Keep the Terminal window open.
+4. Open the **Main device** address shown in the window on the researcher's computer.
+5. Give participants the **Phone/tablet** address shown in the same window.
 
-1. Create a Supabase project.
-2. Open **Authentication → Users** and create one researcher user with your email and a strong password.
-3. Open **SQL Editor**.
-4. Open `supabase-schema.sql` from this folder.
-5. Replace both instances of `REPLACE_WITH_YOUR_RESEARCHER_EMAIL` with the same researcher email.
-6. Run the SQL.
+If macOS blocks the first launch, right-click `start.command`, select **Open**, then confirm.
 
-### 2. Connect the website
+## Start On Windows
 
-Open `config.js` and add the project values:
+1. Install Node.js if needed.
+2. Double-click `start-windows.bat`.
+3. Keep the command window open.
+4. Share the phone/tablet address shown in the window.
 
-```js
-window.NEIGHBOUR_SIGNALS_CONFIG = {
-  supabaseUrl: "https://YOUR_PROJECT.supabase.co",
-  supabaseAnonKey: "YOUR_PUBLISHABLE_OR_ANON_KEY",
-};
-```
+## Network Requirement
 
-The project URL is in **Project Settings → Data API**. The publishable/anon key is in **Project Settings → API Keys**.
+The main computer and participant devices must be connected to the same Wi-Fi or local network. The main computer must stay awake and the server window must remain open.
 
-The publishable/anon key is designed to be used in a browser when Row Level Security is enabled. Never put a `service_role` or secret key in `config.js`.
-
-### 3. Deploy
-
-Upload the complete folder to a static host. Every participant must open the same deployed URL. Their finished stories will then arrive in the same database.
+This local-network version is not reachable from a different home, mobile network, or public internet connection. Remote fieldwork requires hosting or a secure tunnel.
 
 ## Researcher Access
 
-1. Select the `▥` button in the top-right corner.
-2. Enter the researcher email and password created in Supabase.
-3. The dashboard loads all synced participant records.
-4. Use **Refresh**, **CSV**, or **JSON** as needed.
-5. Select **Log out** before handing the device to a participant.
+1. Select `▥` in the top-right corner.
+2. Enter the configured researcher password.
+3. View all records collected from every connected device.
+4. Refresh, export CSV/JSON, or clear the shared data.
+5. Select **Log out** before handing the main computer to a participant.
 
-The researcher login token is kept in session storage, so closing the browser tab ends local dashboard access.
+The password is stored only as a salted cryptographic hash in `server.js`. The browser receives a temporary, HttpOnly login cookie that expires after eight hours or when the server restarts.
+
+## Data File
+
+The shared source of truth is:
+
+```text
+data/records.json
+```
+
+Back up this file during fieldwork. Do not replace or edit it while the server is running.
 
 ## Data Collected
 
 Each anonymous story contains:
 
 - participant code, optional age range, and broad Moray area
-- chosen role and scenario
+- role and scenario
 - time context
 - community node and node type
 - feeling and frequency
@@ -65,14 +69,13 @@ Each anonymous story contains:
 - attitude to technology
 - privacy boundary
 - optional free-text note
-- timestamp and game version
+- completion timestamp and game version
 
-## Important Test
+## Fieldwork Test
 
-Before fieldwork:
-
-1. Submit one test story on a phone.
-2. Open the researcher dashboard on the main device.
-3. Confirm the story appears.
-4. Export CSV and inspect the record.
-5. Log out and confirm the dashboard asks for the password again.
+1. Start the server on the main computer.
+2. Open the phone/tablet address on a second device.
+3. Complete one test story and select **Finish session**.
+4. Open the research dashboard on the main computer.
+5. Confirm the story appears and export a CSV.
+6. Log out and confirm the dashboard asks for the password again.
